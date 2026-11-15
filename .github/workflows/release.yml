@@ -1,0 +1,108 @@
+# Every push to v2 builds every jar (each Ornithe version, the Poseidon plugin) and publishes them as a new GitHub
+# Release; no tag or manual step is needed.
+#
+# Version: `version` in gradle.properties is the next one to release. When that is already released, the last number
+# goes up by one (0.1.0, 0.1.1, 0.1.2, ...; 0.2.0-beta.1, 0.2.0-beta.2, ...), so bumping the major or minor is the
+# only thing left to do by hand. The jars carry the released version. A version with a pre-release part (0.2.0-beta.1)
+# is published as a pre-release. Re-running a run republishes its release (the files are replaced).
+name: release
+
+on:
+  push:
+    branches:
+      - v2
+
+permissions:
+  contents: read
+
+# One release at a time, in push order, so two runs never pick the same version.
+concurrency:
+  group: release-v2
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Pick the version
+        run: |
+          base=$(sed -n 's/^version *= *//p' gradle.properties | tr -d '[:space:]')
+          if ! [[ $base =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version '$base' in gradle.properties is not x.y.z or x.y.z-pre"
+            exit 1
+          fi
+          # A re-run of a released commit keeps that commit's version.
+          version=$(git tag --points-at HEAD --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          if [ -z "$version" ]; then
+            version=$base
+            while git rev-parse -q --verify "refs/tags/v$version" > /dev/null; do
+              if [[ $version =~ ^(.*[^0-9])([0-9]+)$ ]]; then
+                version="${BASH_REMATCH[1]}$((BASH_REMATCH[2] + 1))"
+              else
+                version="$version.1"
+              fi
+            done
+          fi
+          echo "Releasing $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build every jar
+        run: ./gradlew build -Pversion="$VERSION" --no-daemon --console=plain
+
+      - name: Collect the release files
+        run: |
+          mkdir dist
+          cp build/dist/*.jar dist/
+          ls dist/*-b1.7.3-"$VERSION"-Poseidon.jar dist/*-Ornithe-b1.7.3-"$VERSION"-client.jar > /dev/null
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -l dist
+
+      - name: Release notes
+        run: |
+          protocol=$(sed -n 's/.*String VERSION = "\(.*\)";.*/\1/p' common/src/main/java/com/moyettes/legacyvoicechat/Protocol.java)
+          previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2> /dev/null || true)
+          {
+            echo "LegacyVoiceChat $VERSION (voice protocol $protocol; client and server need the same major version)."
+            echo
+            # GitHub shows each line break, so one line per paragraph.
+            echo "Take the jar for your exact game version (it's in the file name): b1.x and 1.0.0–1.2.5 have separate \`-client\` and \`-server\` jars, 1.3.1 and later one jar for both. They need Ornithe gen2 with OSL 0.24.0 or newer. \`-Poseidon\` is the plugin for Project Poseidon (b1.7.3 servers)."
+            echo
+            echo "See the README for what's supported. \`SHA256SUMS.txt\` has the checksums."
+            if [ -n "$previous" ]; then
+              echo
+              echo "Changes since $previous:"
+              git log --no-merges --format='- %s (%h)' "$previous..HEAD"
+            fi
+          } > notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=()
+          case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release upload "v$VERSION" dist/* --clobber
+          else
+            gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "LegacyVoiceChat $VERSION" \
+              --notes-file notes.md "${pre[@]}"
+          fi

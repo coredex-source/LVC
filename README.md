@@ -13,6 +13,8 @@
 
 ## Building
 `./gradlew build` (Gradle 9.8 on Java 21 or newer; the jars are Java 8 bytecode). Jars land in `build/dist/`.
+Every push to `v2` publishes a GitHub Release with every jar (`.github/workflows/release.yml`): `version` in
+`gradle.properties` is the next one, and when it's already released the last number goes up by one.
 See `development.md` for the plan and known bugs.
 
 
