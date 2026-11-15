@@ -1,0 +1,145 @@
+// Shared by every Ornithe module (Ornithe gen2). The module's gradle.properties set:
+//   environment        client | server (pre-1.3 split jars) or merged (1.3+)
+//   minecraft_version  the game version Loom downloads
+//   feather_build      feather-gen2 build
+//   raven_*, sparrow_*, nests_*  per-side builds (split) or merged builds (empty: none published)
+// Builds from https://meta.ornithemc.net/v3/versions (checked 2026-11-15).
+apply plugin: 'net.fabricmc.fabric-loom-remap'
+apply plugin: 'ploceus'
+apply plugin: 'com.gradleup.shadow'
+
+def side = project.environment as String
+assert side in ['client', 'server', 'merged'] : "environment must be client, server or merged (got ${side})"
+
+ploceus.setIntermediaryGeneration(rootProject.intermediary_generation as int)
+
+base {
+	archivesName = "${archives_base_name}-Ornithe-${minecraft_version}"
+}
+
+if (side == 'client') {
+	loom { clientOnlyMinecraftJar() }
+	ploceus { clientOnlyMappings() }
+} else if (side == 'server') {
+	loom { serverOnlyMinecraftJar() }
+	ploceus { serverOnlyMappings() }
+}
+
+def opt = { String key -> (project.findProperty(key) ?: '').toString().trim() }
+
+configurations {
+	// What goes into the mod jar (shadowed, then remapped).
+	shadow
+}
+
+repositories {
+	exclusiveContent {
+		forRepository {
+			maven {
+				name = 'Modrinth'
+				url = uri('https://api.modrinth.com/maven')
+			}
+		}
+		filter {
+			includeGroup('maven.modrinth')
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${minecraft_version}"
+	if (side == 'merged') {
+		if (opt('raven_build')) exceptions ploceus.raven(opt('raven_build'))
+		if (opt('sparrow_build')) signatures ploceus.sparrow(opt('sparrow_build'))
+		if (opt('nests_build')) nests ploceus.nests(opt('nests_build'))
+	} else {
+		if (opt('raven_build')) exceptions ploceus.raven(opt('raven_build'), side)
+		if (opt('sparrow_build')) signatures ploceus.sparrow(opt('sparrow_build'), side)
+		if (opt('nests_build')) nests ploceus.nests(opt('nests_build'), side)
+	}
+	mappings ploceus.featherMappings(feather_build)
+	modImplementation "net.fabricmc:fabric-loader:${rootProject.loader_version}"
+	if (side == 'merged') {
+		ploceus.dependOsl(rootProject.osl_version)
+	} else {
+		ploceus.dependOsl(rootProject.osl_version, side)
+	}
+
+	shadow(implementation(project(':common')))
+	if (side != 'server') {
+		shadow(implementation(project(':client-common')))
+	}
+	if (side != 'client') {
+		shadow(implementation(project(':server-common')))
+	}
+
+	// Dev runs only, never bundled: old versions on modern Java (betacraftuk/legacyfix, GPL-3.0; skips what doesn't apply).
+	modLocalRuntime 'maven.modrinth:legacyfix:26.10'
+}
+
+// Dev runs (the in-game checks): `-Plvc.connect=host:port` makes the client join that server. LegacyFix needs the
+// --add-opens. Client and server get their own directories.
+loom {
+	runs.configureEach { run ->
+		run.ideConfigGenerated(false)
+		run.vmArgs('--add-opens=java.base/java.lang=ALL-UNNAMED')
+		// e.g. -Plvc.jvmArgs=-XX:-BytecodeVerificationRemote: 1.3-1.5 ship a Bouncy Castle class newer JDKs reject
+		// (launchers run those versions on Java 8).
+		def extraJvm = project.findProperty('lvc.jvmArgs')?.toString()
+		if (extraJvm) {
+			run.vmArgs(extraJvm.split(' ') as List)
+		}
+		if (run.name == 'client') {
+			run.runDir('run/client')
+			def connect = project.findProperty('lvc.connect')?.toString()
+			if (connect) {
+				def parts = connect.split(':')
+				run.programArgs('--server', parts[0], '--port', parts.length > 1 ? parts[1] : '25565')
+			}
+			// e.g. -Plvc.clientArgs="--userProperties {}" (1.7.4-1.7.10 clients require it; launchers pass it)
+			def clientArgs = project.findProperty('lvc.clientArgs')?.toString()
+			if (clientArgs) {
+				run.programArgs(clientArgs.split(' ') as List)
+			}
+		} else if (run.name == 'server') {
+			run.runDir('run/server')
+			run.programArgs('nogui')
+		}
+	}
+}
+
+processResources {
+	inputs.property 'version', project.version
+	inputs.property 'osl_version', rootProject.osl_version
+	filesMatching('fabric.mod.json') {
+		expand version: project.version, osl_version: rootProject.osl_version
+	}
+}
+
+tasks.named('shadowJar') {
+	configurations = [project.configurations.shadow]
+	archiveClassifier.set('dev-shadow')
+	// The game's launch profile provides these (Ornithe gen2: log4j 2.19, Gson 2.10); a second copy in the mod jar
+	// would clash with them.
+	dependencies {
+		exclude(dependency('org.apache.logging.log4j:.*'))
+		exclude(dependency('com.google.code.gson:.*'))
+		exclude(dependency('org.jetbrains:annotations'))
+	}
+	from(rootProject.file('LICENSE')) {
+		rename { "${it}_${base.archivesName.get()}" }
+	}
+	// The Opus/RNNoise natives (client side): their wrappers' MIT licences and everything linked into them.
+	if (side != 'server') {
+		from(rootProject.file('licenses')) {
+			include 'natives-third-party.txt', '*-jni-rust-LICENSE.txt'
+			into 'META-INF/licenses/legacyvoicechat'
+		}
+	}
+}
+
+tasks.named('remapJar') {
+	dependsOn tasks.named('shadowJar')
+	inputFile.set(tasks.named('shadowJar').flatMap { it.archiveFile })
+	archiveClassifier.set(side == 'merged' ? '' : side)
+}

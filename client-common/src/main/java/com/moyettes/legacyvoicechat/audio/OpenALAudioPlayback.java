@@ -5,7 +5,6 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.openal.AL;
 import org.lwjgl.openal.AL10;
-import org.lwjgl.LWJGLException;
 import java.nio.ByteBuffer;
 
 public class OpenALAudioPlayback {
@@ -34,15 +33,12 @@ public class OpenALAudioPlayback {
 		}
 
         try {
-            // Make OpenAL context current on this thread if not already
+            // The game's own OpenAL context (its sound system made it). Never create or destroy it here: destroying it
+            // in cleanup() used to silence the game whenever a speaker's source closed. Without it, the caller falls
+            // back to Java Sound.
             if (!AL.isCreated()) {
-                try {
-                    AL.create();
-                    LOGGER.info("OpenAL context created for playback thread");
-                } catch (LWJGLException e) {
-                    LOGGER.warn("Failed to create OpenAL context on playback thread: " + e.getMessage());
-                    return false;
-                }
+                LOGGER.warn("OpenAL isn't initialised (game sound off?); using Java Sound for voice");
+                return false;
             }
 
 			source = AL10.alGenSources();
@@ -240,16 +236,6 @@ public class OpenALAudioPlayback {
 					}
 					bufferIds[i] = 0;
 				}
-			}
-		}
-
-		// Clean up OpenAL context on this thread
-		if (AL.isCreated()) {
-			try {
-				AL.destroy();
-				LOGGER.info("OpenAL context destroyed for playback thread");
-			} catch (Exception e) {
-				LOGGER.warn("Error destroying OpenAL context: " + e.getMessage());
 			}
 		}
 

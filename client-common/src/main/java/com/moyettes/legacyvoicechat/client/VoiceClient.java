@@ -83,12 +83,12 @@ public class VoiceClient {
     private final Map<Integer, Boolean> senderThreadRunning = new ConcurrentHashMap<>();
     private final Map<Integer, Set<Long>> enqueuedSeqBySender = new ConcurrentHashMap<>();
     private static final int SMALL_GAP_PLC_MAX = 4;
-    private enum SourceType { DIRECT, RELAY, GROUP }
-    private final Map<Integer, SourceType> activeSourceBySender = new ConcurrentHashMap<>();
 
-    private boolean shouldProcessSource(Integer senderId, SourceType sourceType) {
-        SourceType prev = activeSourceBySender.putIfAbsent(senderId, sourceType);
-        return prev == null || prev == sourceType;
+
+    private void resetSenderSequence(Integer senderId) {
+        reorderBuffers.remove(senderId);
+        enqueuedSeqBySender.remove(senderId);
+        warmupRemainingBySender.remove(senderId);
     }
 
     private void clearSourceState(Integer senderId) {
@@ -101,7 +101,8 @@ public class VoiceClient {
         enqueuedSeqBySender.remove(senderId);
 
         reorderBuffers.remove(senderId);
-        activeSourceBySender.remove(senderId);
+        lastGains.remove(senderId);
+        lastFrameAt.remove(senderId);
         OpenALAudioPlayback playback = openALPlaybackBySender.remove(senderId);
         if (playback != null) {
             playback.close();
@@ -139,9 +140,25 @@ public class VoiceClient {
         return false;
     }
 
-    private long lastKeepAlive = 0;
-    private long lastSentKeepAlive = 0;
-    private boolean handshakeComplete = false;
+    private volatile long lastKeepAlive = 0;
+    private volatile long lastSentKeepAlive = 0;
+    private volatile boolean handshakeComplete = false;
+    /** The handshake, re-sent until acknowledged (UDP: one lost packet used to mean no voice at all). */
+    private VoiceHandshakePacket pendingHandshake;
+    private long lastHandshakeSent = 0;
+    private int handshakeAttempts = 0;
+    private static final int HANDSHAKE_RETRY_MS = 1000;
+    private static final int HANDSHAKE_MAX_ATTEMPTS = 15;
+    /** Keepalive interval and timeout: pings go out whether or not anything comes in (NAT mappings stay open). */
+    private static final int KEEPALIVE_MS = 2000;
+    private static final int TIMEOUT_MS = 30000;
+    private static final int RECEIVE_TIMEOUT_MS = 250;
+    private Thread listenerUpdater;
+    /** Last stereo gains per speaker, ramped from across each frame so panning changes don't click. */
+    private final Map<Integer, float[]> lastGains = new ConcurrentHashMap<>();
+    /** When each speaker's last frame was played: a stream starting again after a pause fades in over its first frame. */
+    private final Map<Integer, Long> lastFrameAt = new ConcurrentHashMap<>();
+    private static final long STREAM_RESTART_MS = 100;
 
     private Simple3DAudio simple3D;
 
@@ -151,6 +168,8 @@ public class VoiceClient {
     private final Map<String, Float> playerVolumes = new ConcurrentHashMap<>();
 
     private volatile String currentGroupName = null;
+    private volatile String lastGroupError;
+    private volatile long lastGroupErrorAt;
     private final Set<Integer> groupMembers = ConcurrentHashMap.newKeySet();
 
     private ClientConfig config;
@@ -179,6 +198,7 @@ public class VoiceClient {
 
         if (audioProcessor.isInitialized()) {
             audioProcessor.setMicrophoneGain(this.microphoneGain);
+            audioProcessor.setNoiseSuppression(config != null && config.isNoiseSuppression());
         }
 
         boolean useSpecificDevice = (this.outputDeviceName != null && !this.outputDeviceName.equals("Default"));
@@ -238,9 +258,12 @@ public class VoiceClient {
         try {
             socket.connect(InetAddress.getByName(serverHost), serverPort);
         } catch (Exception ignored) { }
+        socket.setSoTimeout(RECEIVE_TIMEOUT_MS);
 
-        VoiceHandshakePacket handshake = new VoiceHandshakePacket(playerNetworkId, authToken, micEnabled);
-        sendPacket(handshake, serverHost, serverPort);
+        pendingHandshake = new VoiceHandshakePacket(playerNetworkId, authToken, micEnabled);
+        handshakeAttempts = 1;
+        lastHandshakeSent = System.currentTimeMillis();
+        sendPacket(pendingHandshake, serverHost, serverPort);
 
         connected = true;
         handshakeComplete = false;
@@ -254,6 +277,13 @@ public class VoiceClient {
         }
 
         connected = false;
+
+        if (listenerUpdater != null) {
+            listenerUpdater.interrupt();
+            listenerUpdater = null;
+        }
+        lastGains.clear();
+        lastFrameAt.clear();
 
         stopMicrophoneCapture();
 
@@ -321,11 +351,11 @@ public class VoiceClient {
 
         while (connected && !socket.isClosed()) {
             try {
+                packet.setLength(buffer.length);
                 socket.receive(packet);
                 handlePacket(packet);
-
-                checkForStaleAudio();
-                checkKeepAlive();
+            } catch (java.net.SocketTimeoutException timeout) {
+                // nothing received: still time for the checks below
             } catch (IOException e) {
                 if (!socket.isClosed()) {
                     String errorMsg = e.getMessage();
@@ -337,7 +367,29 @@ public class VoiceClient {
                     }
                 }
             }
+            if (connected) {
+                retryHandshake();
+                checkForStaleAudio();
+                checkKeepAlive();
+            }
         }
+    }
+
+    private void retryHandshake() {
+        if (handshakeComplete || pendingHandshake == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastHandshakeSent < HANDSHAKE_RETRY_MS) return;
+        if (handshakeAttempts >= HANDSHAKE_MAX_ATTEMPTS) {
+            LOGGER.warn("Voice server " + serverHost + ":" + serverPort + " didn't answer the handshake ("
+                + handshakeAttempts + " tries); is its UDP port open?");
+            disconnect();
+            return;
+        }
+        handshakeAttempts++;
+        lastHandshakeSent = now;
+        try {
+            sendPacket(pendingHandshake, serverHost, serverPort);
+        } catch (IOException ignored) { }
     }
 
     private void handlePacket(DatagramPacket packet) {
@@ -393,8 +445,13 @@ public class VoiceClient {
     }
 
     private void handleHandshakeAck(VoiceHandshakeAckPacket ack) {
+        if (ack.isSuccess() && handshakeComplete) {
+            return; // the ack of a retried handshake
+        }
         if (ack.isSuccess()) {
             handshakeComplete = true;
+            pendingHandshake = null;
+            startListenerUpdater();
 
             lastKeepAlive = System.currentTimeMillis();
             lastSentKeepAlive = System.currentTimeMillis();
@@ -415,10 +472,6 @@ public class VoiceClient {
     }
 
     private void handleVoiceData(VoiceDataPacket voiceData) {
-        if (voiceData.getPlayerNetworkId() != null && !shouldProcessSource(voiceData.getPlayerNetworkId(), SourceType.DIRECT)) {
-            dbg("Drop DIRECT from sender=" + voiceData.getPlayerNetworkId() + " due to activeSource=" + activeSourceBySender.get(voiceData.getPlayerNetworkId()));
-            return;
-        }
         if (voiceData.getAudioData().length == 0) {
             if (voiceData.getPlayerNetworkId() != null) {
                 lastSeqBySender.remove(voiceData.getPlayerNetworkId());
@@ -437,10 +490,6 @@ public class VoiceClient {
     }
 
     private void handleVoiceDataRelay(VoiceDataRelayPacket voiceDataRelay) {
-        if (voiceDataRelay.getFromPlayerNetworkId() != null && !shouldProcessSource(voiceDataRelay.getFromPlayerNetworkId(), SourceType.RELAY)) {
-            dbg("Drop RELAY from sender=" + voiceDataRelay.getFromPlayerNetworkId() + " due to activeSource=" + activeSourceBySender.get(voiceDataRelay.getFromPlayerNetworkId()));
-            return;
-        }
         if (voiceDataRelay.getAudioData().length == 0) {
             if (voiceDataRelay.getFromPlayerNetworkId() != null) {
                 lastSeqBySender.remove(voiceDataRelay.getFromPlayerNetworkId());
@@ -461,10 +510,6 @@ public class VoiceClient {
     }
 
     private void handleGroupData(GroupDataPacket groupData) {
-        if (groupData.getFromPlayerNetworkId() != null && !shouldProcessSource(groupData.getFromPlayerNetworkId(), SourceType.GROUP)) {
-            dbg("Drop GROUP from sender=" + groupData.getFromPlayerNetworkId() + " due to activeSource=" + activeSourceBySender.get(groupData.getFromPlayerNetworkId()));
-            return;
-        }
         if (groupData.getAudioData().length == 0) {
             if (groupData.getFromPlayerNetworkId() != null) {
                 activatedPlayers.remove(groupData.getFromPlayerNetworkId());
@@ -486,6 +531,12 @@ public class VoiceClient {
 
     private void handleGroupMemberUpdate(GroupMemberUpdatePacket memberUpdate) {
         switch (memberUpdate.getUpdateType()) {
+            case REJECTED:
+                // A create or join of ours failed (name taken, wrong password, ...): shown by the voice screens.
+                lastGroupError = memberUpdate.getPlayerName();
+                lastGroupErrorAt = System.currentTimeMillis();
+                LOGGER.info("Group request refused: " + lastGroupError);
+                return;
             case GROUP_CREATED:
                 if (memberUpdate.getPlayerNetworkId() != null && memberUpdate.getPlayerNetworkId().equals(playerNetworkId)) {
                     currentGroupName = memberUpdate.getGroupName();
@@ -561,10 +612,9 @@ public class VoiceClient {
         }
     }
 
-    private void handlePing() throws IOException {
+    private void handlePing() {
+        // The server's answer to our keepalive. Answering it back started an endless ping-pong.
         lastKeepAlive = System.currentTimeMillis();
-
-		sendPacket(new PingPacket(), serverHost, serverPort);
     }
 
     private void processIncomingAudio(byte[] audioData, Integer fromPlayerId, long sequenceNumber) {
@@ -603,6 +653,12 @@ public class VoiceClient {
             buffer.remove(sequenceNumber);
         }
         if (lastSeqForSender != null) {
+            if (sequenceNumber < lastSeqForSender - 1000) {
+                // Far behind: the sender started counting again (a new voice session), not a late packet.
+                resetSenderSequence(fromPlayerId);
+                lastSeqForSender = sequenceNumber - 1;
+                lastSeqBySender.put(fromPlayerId, lastSeqForSender);
+            }
             if (sequenceNumber <= lastSeqForSender) {
                 return;
             }
@@ -655,7 +711,10 @@ public class VoiceClient {
                             }
                         }
                     } else {
-                        for (long missingSeq = expectedNext; missingSeq < sequenceNumber; missingSeq++) {
+                        // A long gap: a few silence frames settle the decoder; one per missing packet (unbounded) could
+                        // freeze this thread on a large jump.
+                        long frames = Math.min(gap, SMALL_GAP_PLC_MAX);
+                        for (long i = 0; i < frames; i++) {
                             senderDecoder.decodeSilence();
                         }
                     }
@@ -793,7 +852,7 @@ public class VoiceClient {
         if (state == PlaybackState.OPENAL) {
             OpenALAudioPlayback senderPlayback = openALPlaybackBySender.get(senderId);
             if (senderPlayback != null && senderPlayback.isInitialized()) {
-                byte[] stereoAudio = calculateStereoPositioning(monoDecoded, playerX, playerY, playerZ, finalVolume);
+                byte[] stereoAudio = calculateStereoPositioning(senderId, monoDecoded, playerX, playerY, playerZ, finalVolume);
                 if (stereoAudio != null && stereoAudio.length > 0) {
                     dbg("Write to OpenAL sender=" + senderId + " len=" + stereoAudio.length);
                     senderPlayback.writeAudioDirect(stereoAudio);
@@ -802,13 +861,13 @@ public class VoiceClient {
         } else if (state == PlaybackState.STEREO_FALLBACK) {
             StereoAudioPlayback fallbackPlayback = stereoPlaybackBySender.get(senderId);
             if (fallbackPlayback != null && fallbackPlayback.isInitialized()) {
-                byte[] positionedAudio = calculateStereoPositioning(monoDecoded, playerX, playerY, playerZ, finalVolume);
+                byte[] positionedAudio = calculateStereoPositioning(senderId, monoDecoded, playerX, playerY, playerZ, finalVolume);
                 if (positionedAudio != null && positionedAudio.length > 0) {
                     dbg("Enqueue to fallback StereoAudioPlayback sender=" + senderId + " len=" + positionedAudio.length);
                     fallbackPlayback.queueAudio(positionedAudio);
                 }
             } else if (stereoAudioPlayback != null && stereoAudioPlayback.isInitialized()) {
-                byte[] positionedAudio = calculateStereoPositioning(monoDecoded, playerX, playerY, playerZ, finalVolume);
+                byte[] positionedAudio = calculateStereoPositioning(senderId, monoDecoded, playerX, playerY, playerZ, finalVolume);
                 if (positionedAudio != null && positionedAudio.length > 0) {
                     dbg("Enqueue to global StereoAudioPlayback len=" + positionedAudio.length);
                     stereoAudioPlayback.queueAudio(positionedAudio);
@@ -1012,7 +1071,7 @@ public class VoiceClient {
         this.pttKeyPressed = false;
         if (config != null) {
             config.setPushToTalk(pushToTalk);
-            config.save();
+            config.saveSoon();
         }
     }
 
@@ -1034,7 +1093,7 @@ public class VoiceClient {
         this.silenceThreshold = silenceThreshold;
         if (config != null) {
             config.setActivationThreshold(silenceThreshold);
-            config.save();
+            config.saveSoon();
         }
     }
 
@@ -1053,7 +1112,21 @@ public class VoiceClient {
 
         if (config != null) {
             config.setMicrophoneGain(microphoneGain);
-            config.save();
+            config.saveSoon();
+        }
+    }
+
+    public boolean isNoiseSuppression() {
+        return config != null && config.isNoiseSuppression();
+    }
+
+    public void setNoiseSuppression(boolean enabled) {
+        if (audioProcessor != null) {
+            audioProcessor.setNoiseSuppression(enabled);
+        }
+        if (config != null) {
+            config.setNoiseSuppression(enabled);
+            config.saveSoon();
         }
     }
 
@@ -1067,7 +1140,7 @@ public class VoiceClient {
         this.masterVolume = masterVolume;
         if (config != null) {
             config.setMasterVolume(masterVolume);
-            config.save();
+            config.saveSoon();
         }
     }
 
@@ -1085,8 +1158,13 @@ public class VoiceClient {
         }
         if (config != null) {
             config.setPlayerVolume(playerName, volume);
-            config.save();
+            config.saveSoon();
         }
+    }
+
+    /** Why the last group request failed, while it is recent (5 s), else null. */
+    public String getRecentGroupError() {
+        return lastGroupError != null && System.currentTimeMillis() - lastGroupErrorAt < 5000 ? lastGroupError : null;
     }
 
     public String getCurrentGroupName() {
@@ -1173,7 +1251,7 @@ public class VoiceClient {
         this.inputDeviceName = deviceName;
         if (config != null) {
             config.setInputDevice(deviceName);
-            config.save();
+            config.saveSoon();
         }
 
         boolean wasTestingMic = isMicrophoneTesting;
@@ -1209,7 +1287,7 @@ public class VoiceClient {
         this.outputDeviceName = deviceName;
         if (config != null) {
             config.setOutputDevice(deviceName);
-            config.save();
+            config.saveSoon();
         }
 
         boolean shouldUseStereo = (deviceName != null && !deviceName.equals("Default"));
@@ -1280,7 +1358,7 @@ public class VoiceClient {
 
         long now = System.currentTimeMillis();
 
-        if (now - lastSentKeepAlive > 10000) {
+        if (now - lastSentKeepAlive > KEEPALIVE_MS) {
             try {
                 sendPacket(new PingPacket(), serverHost, serverPort);
                 lastSentKeepAlive = now;
@@ -1288,7 +1366,7 @@ public class VoiceClient {
         }
 
         long timeSinceLastActivity = now - lastKeepAlive;
-        if (timeSinceLastActivity > 120000) {
+        if (timeSinceLastActivity > TIMEOUT_MS) {
             LOGGER.warn("Voice server connection timed out (no activity for " + (timeSinceLastActivity / 1000) + " seconds)");
             disconnect();
         }
@@ -1414,79 +1492,68 @@ public class VoiceClient {
         }
     }
 
-    private byte[] calculateStereoPositioning(byte[] audioData, double playerX, double playerY, double playerZ, float volume) {
+    /**
+     * Mono to stereo for one speaker: a balance law (the near ear at full level, the far one fading; 0 dB in the
+     * centre, continuous everywhere) with the gains ramped from the previous frame's. It used to switch from sqrt(0.5)
+     * per channel to 1.0 when |pan| < 0.01 (+3 dB each time a speaker passed the centre) and to jump per 20 ms frame:
+     * the clicks when turning. Volume may exceed 1 (settings go to 200%); samples are clamped.
+     */
+    private byte[] calculateStereoPositioning(Integer senderId, byte[] audioData, double playerX, double playerY, double playerZ, float volume) {
         if (audioData == null || audioData.length == 0) {
             return null;
         }
-
-		if (isInGroup()) {
-			return duplicateMonoToStereo(audioData, volume);
-		}
-
-		double relX = playerX - simple3D.listenerX;
-        double relZ = playerZ - simple3D.listenerZ;
-        double distance = Math.sqrt(relX * relX + relZ * relZ);
-        if (distance < 1e-6) {
-            return duplicateMonoToStereo(audioData, volume);
-        }
-        double unitX = relX / distance;
-        double unitZ = relZ / distance;
-
-        double yawRad = Math.toRadians(simple3D.listenerYaw);
-        double rx = Math.cos(yawRad);
-        double rz = Math.sin(yawRad);
-        float pan = (float) -(unitX * rx + unitZ * rz);
-
-        if (volume < 1.0f) {
-            float distanceAttenuation = (float) Math.max(0.1, Math.min(1.0, 10.0 / Math.max(1.0, distance)));
-            volume *= distanceAttenuation;
-        }
-
-        pan = Math.max(-1.0f, Math.min(1.0f, pan));
-
-        return applyStereoPanning(audioData, pan, volume);
-    }
-
-
-    private byte[] applyStereoPanning(byte[] audioData, float pan, float volume) {
-        if (Math.abs(pan) < 0.01f) {
-            return duplicateMonoToStereo(audioData, volume);
-        }
-
-        byte[] stereoAudio = new byte[audioData.length * 2];
-
-        float leftGain  = (float) Math.sqrt(0.5 * (1.0 - pan));
-        float rightGain = (float) Math.sqrt(0.5 * (1.0 + pan));
-
-        volume = Math.min(volume, 1.0f);
-
-        for (int i = 0; i < audioData.length; i += 2) {
-            if (i + 1 < audioData.length) {
-                short sample = (short) ((audioData[i + 1] << 8) | (audioData[i] & 0xFF));
-
-                int scaledSample = (int) (sample * volume);
-                scaledSample = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, scaledSample));
-                short volumeSample = (short) scaledSample;
-
-                int leftScaled = (int) (volumeSample * leftGain);
-                int rightScaled = (int) (volumeSample * rightGain);
-                leftScaled = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, leftScaled));
-                rightScaled = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, rightScaled));
-
-                short leftSample = (short) leftScaled;
-                short rightSample = (short) rightScaled;
-
-                int stereoIndex = (i / 2) * 4;
-
-                stereoAudio[stereoIndex] = (byte) (leftSample & 0xFF);
-                stereoAudio[stereoIndex + 1] = (byte) ((leftSample >> 8) & 0xFF);
-
-                stereoAudio[stereoIndex + 2] = (byte) (rightSample & 0xFF);
-                stereoAudio[stereoIndex + 3] = (byte) ((rightSample >> 8) & 0xFF);
+        float pan = 0.0f;
+        Simple3DAudio audio = simple3D;
+        if (!isInGroup() && audio != null) {
+            double relX = playerX - audio.listenerX;
+            double relZ = playerZ - audio.listenerZ;
+            double distance = Math.sqrt(relX * relX + relZ * relZ);
+            if (distance >= 1e-6) {
+                double yawRad = Math.toRadians(audio.listenerYaw);
+                pan = (float) -((relX / distance) * Math.cos(yawRad) + (relZ / distance) * Math.sin(yawRad));
+                pan = Math.max(-1.0f, Math.min(1.0f, pan));
+            }
+            if (volume < 1.0f) {
+                volume *= (float) Math.max(0.1, Math.min(1.0, 10.0 / Math.max(1.0, distance)));
             }
         }
+        float left = volume * (pan > 0 ? 1.0f - pan : 1.0f);
+        float right = volume * (pan < 0 ? 1.0f + pan : 1.0f);
+        float[] last = senderId != null ? lastGains.get(senderId) : null;
+        float fromLeft = last != null ? last[0] : left;
+        float fromRight = last != null ? last[1] : right;
+        if (senderId != null) {
+            // The first decoded frame after a pause starts mid-waveform (silence, then a jump: a click at every
+            // start of speech); ramp it in from zero.
+            long now = System.currentTimeMillis();
+            Long previous = lastFrameAt.put(senderId, now);
+            if (previous == null || now - previous > STREAM_RESTART_MS) {
+                fromLeft = 0.0f;
+                fromRight = 0.0f;
+            }
+        }
+        if (senderId != null) {
+            lastGains.put(senderId, new float[] {left, right});
+        }
+        return toStereo(audioData, fromLeft, fromRight, left, right);
+    }
 
-        return stereoAudio;
+    private static byte[] toStereo(byte[] mono, float fromLeft, float fromRight, float toLeft, float toRight) {
+        int frames = mono.length / 2;
+        byte[] stereo = new byte[frames * 4];
+        for (int i = 0; i < frames; i++) {
+            float t = frames > 1 ? (float) i / (frames - 1) : 1.0f;
+            float gl = fromLeft + (toLeft - fromLeft) * t;
+            float gr = fromRight + (toRight - fromRight) * t;
+            short sample = (short) ((mono[2 * i + 1] << 8) | (mono[2 * i] & 0xFF));
+            int l = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, Math.round(sample * gl)));
+            int r = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, Math.round(sample * gr)));
+            stereo[4 * i] = (byte) l;
+            stereo[4 * i + 1] = (byte) (l >> 8);
+            stereo[4 * i + 2] = (byte) r;
+            stereo[4 * i + 3] = (byte) (r >> 8);
+        }
+        return stereo;
     }
 
     private byte[] duplicateMonoToStereo(byte[] monoAudio, float volume) {
@@ -1516,9 +1583,40 @@ public class VoiceClient {
     }
 
     public void updateListenerPosition(double x, double y, double z, float yaw, float pitch) {
-        if (simple3D != null && simple3D.isInitialized()) {
-            simple3D.updateListener(x, y, z, yaw, pitch);
+        Simple3DAudio audio = simple3D;
+        if (audio != null && audio.isInitialized()) {
+            audio.updateListener(x, y, z, yaw, pitch);
         }
+    }
+
+    /**
+     * The listener's position every 50 ms from the version's client accessor, for as long as this client is connected.
+     * Each version module used to start its own thread per handshake; those piled up and outlived their client.
+     */
+    private void startListenerUpdater() {
+        if (listenerUpdater != null) return;
+        final VoiceClientContext ctx = VoiceClientBoot.getContext();
+        if (ctx == null || ctx.client == null) return;
+        Thread updater = new Thread(() -> {
+            while (connected && !Thread.currentThread().isInterrupted()) {
+                try {
+                    float yaw = ctx.client.getYaw() % 360.0f;
+                    if (yaw < 0) yaw += 360.0f;
+                    updateListenerPosition(ctx.client.getPlayerX(), ctx.client.getPlayerY(), ctx.client.getPlayerZ(), yaw,
+                        ctx.client.getPitch());
+                } catch (RuntimeException notInWorld) {
+                    // no player yet, or the world is changing
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "VoiceListenerPositionUpdater");
+        updater.setDaemon(true);
+        listenerUpdater = updater;
+        updater.start();
     }
 
     public boolean startMicrophoneTesting() {

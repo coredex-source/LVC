@@ -1,6 +1,6 @@
 package com.moyettes.legacyvoicechat.utils;
 
-import com.mojang.blaze3d.platform.MemoryTracker;
+import net.minecraft.client.render.platform.MemoryTracker;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.ARBVertexBufferObject;
 import org.lwjgl.opengl.GL;

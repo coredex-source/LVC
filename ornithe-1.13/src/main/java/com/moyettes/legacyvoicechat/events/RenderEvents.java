@@ -1,6 +1,6 @@
 package com.moyettes.legacyvoicechat.events;
 
-import com.mojang.blaze3d.vertex.BufferBuilder;
+import net.minecraft.client.render.vertex.BufferBuilder;
 import com.moyettes.legacyvoicechat.utils.MinecraftAccessor;
 import com.moyettes.legacyvoicechat.client.Voice;
 import com.moyettes.legacyvoicechat.client.VoiceClient;

@@ -1,6 +1,6 @@
 package com.moyettes.legacyvoicechat.compat;
 
-import net.minecraft.server.entity.living.player.ServerPlayerEntity;
+import net.minecraft.server.entity.mob.player.ServerPlayerEntity;
 
 public class VoicePlayer1_3_1 implements VoicePlayer {
 

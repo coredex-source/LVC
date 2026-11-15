@@ -1,12 +1,12 @@
 package com.moyettes.legacyvoicechat.events;
 
-import com.mojang.blaze3d.vertex.BufferBuilder;
+import net.minecraft.client.render.vertex.Tesselator;
 import com.moyettes.legacyvoicechat.Voice;
 import com.moyettes.legacyvoicechat.client.VoiceClient;
 import com.moyettes.legacyvoicechat.utils.MinecraftAccessor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.render.Window;
-import net.minecraft.entity.living.player.PlayerEntity;
+import net.minecraft.entity.mob.player.PlayerEntity;
 import org.lwjgl.opengl.GL11;
 
 public class RenderEvents {
@@ -106,8 +106,8 @@ public class RenderEvents {
 		int iconSize = 16;
 		int half = iconSize / 2;
 
-		BufferBuilder buffer = BufferBuilder.INSTANCE;
-		buffer.start();
+		Tesselator buffer = Tesselator.INSTANCE;
+		buffer.begin();
 		buffer.vertex(-half, -half, 0, 0, 0);
 		buffer.vertex(half, -half, 0, 1, 0);
 		buffer.vertex(half, half, 0, 1, 1);
@@ -154,8 +154,8 @@ public class RenderEvents {
 		int iconSize = 16;
 		int half = iconSize / 2;
 
-		BufferBuilder buffer = BufferBuilder.INSTANCE;
-		buffer.start();
+		Tesselator buffer = Tesselator.INSTANCE;
+		buffer.begin();
 		buffer.vertex(-half, -half, 0, 0, 0);
 		buffer.vertex(half, -half, 0, 1, 0);
 		buffer.vertex(half, half, 0, 1, 1);
@@ -183,8 +183,8 @@ public class RenderEvents {
 		GL11.glEnable(GL11.GL_BLEND);
 		GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
 
-		BufferBuilder bufferBuilder = BufferBuilder.INSTANCE;
-		bufferBuilder.start();
+		Tesselator bufferBuilder = Tesselator.INSTANCE;
+		bufferBuilder.begin();
 		bufferBuilder.vertex((double) x, (double) (y + iconSize), 0.0D, 0.0D, 1.0D);
 		bufferBuilder.vertex((double) (x + iconSize), (double) (y + iconSize), 0.0D, 1.0D, 1.0D);
 		bufferBuilder.vertex((double) (x + iconSize), (double) y, 0.0D, 1.0D, 0.0D);

@@ -97,7 +97,8 @@ public class Metrics {
 			MinecraftCompat compat = ctx.mc;
 			if (compat == null) return;
 
-			int playerAmount = compat.getOnlinePlayerCount();
+			// From the game thread's snapshot: this runs on a timer thread.
+			int playerAmount = Voice.getOnlinePlayerCount();
 			String osName = System.getProperty("os.name");
 			String osArch = System.getProperty("os.arch");
 			String javaVersion = System.getProperty("java.version");
@@ -169,5 +170,9 @@ public class Metrics {
 	private String escapeJson(String s) {
 		if (s == null) return "";
 		return s.replace("\\", "\\\\").replace("\"", "\\\"");
+	}
+
+	public void shutdown() {
+		timer.cancel();
 	}
 }

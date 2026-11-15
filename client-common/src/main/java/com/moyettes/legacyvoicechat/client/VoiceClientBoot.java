@@ -19,6 +19,14 @@ public final class VoiceClientBoot {
 		LOGGER.info("LegacyVoiceChat client booting on {} ({})", ctx.loader, ctx.minecraftVersion);
 	}
 
+	/** Whether this client can use a server announcing {@code protocolVersion} (same major version); logs when not. */
+	public static boolean acceptsServer(String protocolVersion) {
+		if (com.moyettes.legacyvoicechat.Protocol.isCompatible(protocolVersion)) return true;
+		LOGGER.warn("The server has LegacyVoiceChat protocol {}, this client {}: no voice until one side is updated",
+			protocolVersion, com.moyettes.legacyvoicechat.Protocol.VERSION);
+		return false;
+	}
+
 	public static VoiceClientContext getContext() {
 		return context;
 	}

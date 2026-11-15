@@ -31,7 +31,7 @@ public class KeyEvents {
 	}
 
 	private void handleKeybinds() {
-		if (((KeyBindingExtension) muteKeybind).isPressed()) {
+		if (((KeyBindingExtension) muteKeybind).lvc$wasPressed()) {
 			VoiceClient voiceClient = Voice.getVoiceClient();
 			if (voiceClient != null) {
 				voiceClient.toggleMute();
@@ -39,7 +39,7 @@ public class KeyEvents {
 				Voice.LOGGER.info("Voice client not connected - cannot toggle mute");
 			}
 		}
-		if (((KeyBindingExtension) menuKeybind).isPressed()) {
+		if (((KeyBindingExtension) menuKeybind).lvc$wasPressed()) {
 			net.minecraft.client.Minecraft mc = MinecraftAccessor.getMinecraft();
 			if (mc != null && mc.world != null && mc.screen == null) {
 				VoiceClientContext ctx = VoiceClientBoot.getContext();
@@ -49,13 +49,14 @@ public class KeyEvents {
 				}
 			}
 		}
-		if (((KeyBindingExtension) hideIcons).isPressed()) {
+		if (((KeyBindingExtension) hideIcons).lvc$wasPressed()) {
 			Voice.toggleIcons();
 		}
 
 		VoiceClient voiceClient = Voice.getVoiceClient();
 		if (voiceClient != null && voiceClient.isPushToTalk()) {
-			boolean pttPressed = Keyboard.isKeyDown(ptt.keyCode);
+			// Not while chat or any other screen is open (it used to transmit while typing).
+			boolean pttPressed = MinecraftAccessor.getMinecraft().screen == null && Keyboard.isKeyDown(ptt.keyCode);
 			voiceClient.setPttKeyPressed(pttPressed);
 		}
 	}

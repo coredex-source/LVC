@@ -37,6 +37,18 @@ public class ClientConfig {
     @SerializedName("player_volumes")
     private Map<String, Float> playerVolumes = new HashMap<>();
 
+    @SerializedName("noise_suppression")
+    private boolean noiseSuppression = false;
+
+    /** One background writer: settings changed by a dragged slider are written once, a second after the last change. */
+    private static final java.util.concurrent.ScheduledExecutorService WRITER =
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "LegacyVoiceChat config writer");
+            t.setDaemon(true);
+            return t;
+        });
+    private transient java.util.concurrent.ScheduledFuture<?> pendingSave;
+
     private static final float MIN_VOLUME = 0.0f;
     private static final float MAX_VOLUME = 2.0f;
     private static final double MIN_THRESHOLD = -127.0;
@@ -92,6 +104,22 @@ public class ClientConfig {
 
     public void setOutputDevice(String outputDevice) {
         this.outputDevice = (outputDevice != null && outputDevice.trim().isEmpty()) ? null : outputDevice;
+    }
+
+    public boolean isNoiseSuppression() {
+        return noiseSuppression;
+    }
+
+    public void setNoiseSuppression(boolean noiseSuppression) {
+        this.noiseSuppression = noiseSuppression;
+    }
+
+    /** Saves a second after the last call (a dragged slider used to write the file on every step). */
+    public synchronized void saveSoon() {
+        if (pendingSave != null) {
+            pendingSave.cancel(false);
+        }
+        pendingSave = WRITER.schedule(this::save, 1, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     public Map<String, Float> getPlayerVolumes() {

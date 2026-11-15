@@ -1,5 +1,5 @@
 plugins {
-	id 'com.gradleup.shadow' version '8.3.6'
+	id 'com.gradleup.shadow'
 }
 
 base {
@@ -39,8 +39,18 @@ processResources {
 shadowJar {
 	configurations = [project.configurations.bundled]
 	archiveClassifier.set('Poseidon')
+	// Poseidon ships its own (older) Gson; ours is relocated so neither sees the other.
+	relocate 'com.google.gson', 'com.moyettes.legacyvoicechat.shadow.gson'
+	// Nothing log4j: server code logs through log.VoiceLog (java.util.logging here).
+	dependencies {
+		exclude(dependency('org.apache.logging.log4j:.*'))
+		exclude(dependency('com.google.errorprone:.*'))
+	}
 	from(rootProject.file('LICENSE')) {
 		rename { "${it}_${base.archivesName.get()}" }
+	}
+	from(rootProject.file('licenses/gson-NOTICE.txt')) {
+		into 'META-INF/licenses/legacyvoicechat'
 	}
 }
 

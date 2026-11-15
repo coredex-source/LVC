@@ -22,7 +22,8 @@ publishing {
 
 dependencies {
 	implementation('org.jetbrains:annotations:26.0.2')
-	implementation('org.apache.logging.log4j:log4j-core:2.24.3')
+	// The game provides log4j (2.19 in the Ornithe gen2 profile).
+	compileOnly('org.apache.logging.log4j:log4j-api:2.19.0')
 	implementation('com.plasmoverse:opus-jni-rust:1.0.3')
 	implementation('com.plasmoverse:rnnoise-jni-rust:1.0.2')
 	implementation('com.google.code.gson:gson:2.10.1')

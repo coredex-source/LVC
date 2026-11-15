@@ -3,16 +3,16 @@
   "minVersion": "0.8",
   "package": "com.moyettes.legacyvoicechat.mixin",
   "compatibilityLevel": "JAVA_8",
-  "mixins": [
-    "GameGuiMixin"
-  ],
+  "mixins": [],
   "client": [
+    "GameGuiMixin",
     "ClientNetworkHandlerMixin",
     "ConnectionInterfaceMixin",
     "ConnectionMixin",
     "GameOptionsMixin",
     "MinecraftMixin",
-    "PlayerEntityRendererMixin"
+    "PlayerEntityRendererMixin",
+    "KeyBindingCategoriesAccessor"
   ],
   "server": [
     "MinecraftServerMixin"

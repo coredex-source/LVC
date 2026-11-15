@@ -5,7 +5,7 @@ import net.minecraft.client.options.GameOptions;
 import net.minecraft.client.options.KeyBinding;
 import net.ornithemc.osl.keybinds.api.KeyBindingEvents;
 import net.ornithemc.osl.keybinds.api.KeyBindingRegistry;
-import net.ornithemc.osl.keybinds.impl.mixin.client.KeyBindingAccessor;
+import com.moyettes.legacyvoicechat.mixin.KeyBindingCategoriesAccessor;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -65,7 +65,7 @@ public class GameOptionsMixin implements KeyBindingRegistry {
 	}
 
 	private void addCategory(String category) {
-		Map<String, Integer> sortOrder = KeyBindingAccessor.osl$keybinds$getCategorySortOrder();
+		Map<String, Integer> sortOrder = KeyBindingCategoriesAccessor.lvc$getCategorySortOrder();
 
 		if (!sortOrder.containsKey(category)) {
 			sortOrder.put(category, sortOrder.size() + 1);

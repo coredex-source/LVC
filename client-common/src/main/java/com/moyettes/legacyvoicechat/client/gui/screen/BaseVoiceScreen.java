@@ -1,5 +1,6 @@
 package com.moyettes.legacyvoicechat.client.gui.screen;
 
+import com.moyettes.legacyvoicechat.client.VoiceClient;
 import com.moyettes.legacyvoicechat.client.VoiceClientBoot;
 import com.moyettes.legacyvoicechat.client.VoiceSession;
 import com.moyettes.legacyvoicechat.client.gui.widget.UiButton;
@@ -154,6 +155,12 @@ public abstract class BaseVoiceScreen implements IScreenLifecycle {
 			int titleWidth = api.textWidth(title);
 			int titleX = backgroundX + (backgroundWidth - titleWidth) / 2;
 			api.drawString(title, titleX, backgroundY + 6, 0x404040);
+		}
+		// The server refused a group request: say why, under the window, for a few seconds.
+		VoiceClient vc = VoiceSession.getActive();
+		String error = vc != null ? vc.getRecentGroupError() : null;
+		if (error != null) {
+			api.drawCenteredString(error, backgroundX + backgroundWidth / 2, backgroundY + backgroundHeight + 4, 0xFF5555);
 		}
 	}
 

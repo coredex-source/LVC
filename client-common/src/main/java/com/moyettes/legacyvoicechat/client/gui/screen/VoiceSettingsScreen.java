@@ -41,16 +41,26 @@ public class VoiceSettingsScreen extends BaseVoiceScreen {
 	private UiButton deviceButton;
 	private UiButton outputDeviceButton;
 	private UiButton testButton;
+	private UiButton noiseButton;
+	private boolean noiseSuppression;
 
 	private static double thresholdToDb(double raw) {
 		return -60.0 + (raw / 1000.0) * 60.0;
+	}
+
+	/** The slider works in 0..1000 for -60..0 dB; the client stores dB. */
+	private static double dbToThreshold(double db) {
+		return Math.max(0.0, Math.min(1000.0, (db + 60.0) / 60.0 * 1000.0));
 	}
 
 	@Override
 	protected void initContent() {
 		VoiceClient vc = VoiceSession.getActive();
 		if (vc != null) {
-			threshold = vc.getSilenceThreshold();
+			// The client keeps dB; this screen used to treat it as a slider position (and send positions back as dB:
+			// anything above 0 was clamped to 0 dB, so voice activation never triggered once the slider was touched).
+			threshold = dbToThreshold(vc.getSilenceThreshold());
+			noiseSuppression = vc.isNoiseSuppression();
 			micGain = vc.getMicrophoneGain();
 			voiceVolume = vc.getMasterVolume();
 			testingMic = vc.isMicrophoneTesting();
@@ -125,6 +135,21 @@ public class VoiceSettingsScreen extends BaseVoiceScreen {
 		UiButton deafenButton = new UiButton(backgroundX + 32, backgroundY + backgroundHeight - 28, 20, 20, "",
 			this::onDeafenToggled);
 		widgets.add(deafenButton);
+
+		noiseButton = new UiButton(backgroundX + 56, backgroundY + backgroundHeight - 28, backgroundWidth - 64, 20,
+			noiseLabel(), this::onNoiseToggled);
+		widgets.add(noiseButton);
+	}
+
+	private String noiseLabel() {
+		return "Noise filter: " + (noiseSuppression ? "On" : "Off");
+	}
+
+	private void onNoiseToggled() {
+		noiseSuppression = !noiseSuppression;
+		noiseButton.setMessage(noiseLabel());
+		VoiceClient vc = VoiceSession.getActive();
+		if (vc != null) vc.setNoiseSuppression(noiseSuppression);
 	}
 
 	private static float clamp01(float v) {
@@ -151,7 +176,7 @@ public class VoiceSettingsScreen extends BaseVoiceScreen {
 		threshold = Math.max(0.0, Math.min(1000.0, slider.value * 1000.0));
 		slider.setMessage("Activation Threshold: " + (int) Math.round(thresholdToDb(threshold)) + " dB");
 		VoiceClient vc = VoiceSession.getActive();
-		if (vc != null) vc.setSilenceThreshold(threshold);
+		if (vc != null) vc.setSilenceThreshold(thresholdToDb(threshold));
 	}
 
 	private void onActivationToggled() {

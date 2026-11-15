@@ -16,7 +16,7 @@ import com.moyettes.legacyvoicechat.events.KeyEvents;
 import com.moyettes.legacyvoicechat.events.RenderEvents;
 import com.moyettes.legacyvoicechat.mixin.ClientNetworkHandlerMixin;
 import com.moyettes.legacyvoicechat.mixin.ConnectionInterfaceMixin;
-import com.moyettes.legacyvoicechat.mixin.ConnectionMixin;
+import com.moyettes.legacyvoicechat.network.OslPayload;
 import com.moyettes.legacyvoicechat.packet.VoiceModSupportedPayload;
 import com.moyettes.legacyvoicechat.packet.VoiceServerInfoPayload;
 import net.minecraft.client.Minecraft;
@@ -38,19 +38,8 @@ public class Voice implements ModInitializer {
 
 	public static final Logger LOGGER = LogManager.getLogger("LegacyVoiceChat");
 
-	public static final class OslModSupported extends VoiceModSupportedPayload
-		implements net.ornithemc.osl.networking.api.CustomPayload {
-		public OslModSupported() { super(); }
-		public OslModSupported(String protocolVersion) { super(protocolVersion); }
-	}
-
-	public static final class OslServerInfo extends VoiceServerInfoPayload
-		implements net.ornithemc.osl.networking.api.CustomPayload {
-		public OslServerInfo() { super(); }
-	}
-
 	private static VoiceClient voiceClient;
-	private static final String PROTOCOL_VERSION = "1.0.0";
+	private static final String PROTOCOL_VERSION = com.moyettes.legacyvoicechat.Protocol.VERSION;
 	private static final boolean MIC_ENABLED = true;
 	private static volatile boolean hideIcons = false;
 	public static KeyEvents keyEvents;
@@ -78,29 +67,38 @@ public class Voice implements ModInitializer {
 	}
 
 	private void registerNetworkListeners() {
-		ClientPlayNetworking.registerListener("voice|server_info", OslServerInfo::new,
-			(minecraft, handler, payload) -> {
+		ClientPlayNetworking.registerListener(OslPayload.SERVER_INFO, () -> new OslPayload<>(new VoiceServerInfoPayload()),
+			(context, message) -> {
+				// From 1.8 on payloads arrive on the network thread: OSL runs this again on the main thread.
+				context.ensureOnMainThread();
+				VoiceServerInfoPayload payload = message.get();
+				if (!VoiceClientBoot.acceptsServer(payload.getProtocolVersion())) {
+					return;
+				}
 				LOGGER.info("Received voice server info - Port: " + payload.getVoiceServerPort() +
 					", Protocol: " + payload.getProtocolVersion());
 
-				connectToVoiceServer(payload, minecraft);
-				return true;
+				connectToVoiceServer(payload, context.minecraft());
 			});
 
-		ClientConnectionEvents.PLAY_READY.register((minecraft) -> {
+		// OSL gen2: fires once the server's OSL handshake has arrived (sending before that is dropped).
+		ClientConnectionEvents.PLAY_READY.register(context -> {
 			LOGGER.info("Connected to server, sending voice mod support");
-			ClientPlayNetworking.send("voice|mod_supported", new OslModSupported(PROTOCOL_VERSION));
+			ClientPlayNetworking.send(OslPayload.MOD_SUPPORTED, new OslPayload<>(new VoiceModSupportedPayload(PROTOCOL_VERSION)));
 		});
 
-		ClientConnectionEvents.DISCONNECT.register((minecraft) -> {
-			if(voiceClient == null) return;
-			voiceClient.disconnect();
-		});
+		ClientConnectionEvents.DISCONNECT.register(context -> forceDisconnect());
 	}
 
 	private void connectToVoiceServer(VoiceServerInfoPayload serverInfo, Minecraft minecraft) {
 		try {
 			Integer playerNetworkId = getPlayerNetworkId(minecraft);
+			if (playerNetworkId == null) {
+				LOGGER.warn("Voice server info arrived before the player exists; not connecting");
+				return;
+			}
+			// A second server_info used to replace the client without closing it (sockets, threads, double audio).
+			forceDisconnect();
 			voiceClient = new VoiceClient(playerNetworkId, MIC_ENABLED);
 			VoiceSession.setActive(voiceClient);
 
@@ -108,16 +106,16 @@ public class Voice implements ModInitializer {
 				if (!ack.isSuccess()) {
 					LOGGER.warn("Failed to connect to voice server: " + ack.getMessage());
 				} else {
-					startListenerPositionUpdater(minecraft);
+					// VoiceClient keeps the listener position up to date itself.
 				}
 			});
 
 			String serverHost = serverInfo.getServerHost();
 
-			if ("0.0.0.0".equals(serverHost)) {
+			if (serverHost == null || serverHost.isEmpty() || "0.0.0.0".equals(serverHost) || "::".equals(serverHost)) {
 				try {
 					InetAddress resolvedAddress = resolveServerHostFromConnection(minecraft);
-					if (resolvedAddress instanceof Inet4Address && !resolvedAddress.isLoopbackAddress()) {
+					if (resolvedAddress != null) {
 						serverHost = resolvedAddress.getHostAddress();
 					} else {
 						serverHost = "127.0.0.1";
@@ -166,7 +164,7 @@ public class Voice implements ModInitializer {
 		} catch (Exception e) {
 			LOGGER.error("Failed to get player network ID: " + e.getMessage());
 		}
-		return 12345;
+		return null;
 	}
 
 
@@ -230,33 +228,4 @@ public class Voice implements ModInitializer {
 		return hideIcons;
 	}
 
-	private void startListenerPositionUpdater(net.minecraft.client.Minecraft minecraft) {
-		Thread positionUpdater = new Thread(() -> {
-			while (voiceClient != null && voiceClient.isConnected()) {
-				try {
-					if (minecraft.player != null) {
-						double x = minecraft.player.x;
-						double y = minecraft.player.y;
-						double z = minecraft.player.z;
-						float yaw = minecraft.player.yaw;
-						float pitch = minecraft.player.pitch;
-
-						while (yaw < 0) yaw += 360;
-						while (yaw >= 360) yaw -= 360;
-
-						voiceClient.updateListenerPosition(x, y, z, yaw, pitch);
-					}
-
-					Thread.sleep(50);
-				} catch (InterruptedException e) {
-					break;
-				} catch (Exception e) {
-					LOGGER.error("Error updating listener position: " + e.getMessage());
-				}
-			}
-		}, "VoiceListenerPositionUpdater");
-
-		positionUpdater.setDaemon(true);
-		positionUpdater.start();
-	}
 }

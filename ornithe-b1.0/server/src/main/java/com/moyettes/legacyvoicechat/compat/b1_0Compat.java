@@ -2,7 +2,7 @@ package com.moyettes.legacyvoicechat.compat;
 
 import com.moyettes.legacyvoicechat.utils.MinecraftServerAccessor;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.entity.living.player.ServerPlayerEntity;
+import net.minecraft.server.entity.mob.player.ServerPlayerEntity;
 
 import java.util.ArrayList;
 import java.util.Collection;

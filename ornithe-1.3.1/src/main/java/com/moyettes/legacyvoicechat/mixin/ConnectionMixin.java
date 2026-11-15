@@ -1,8 +1,7 @@
 package com.moyettes.legacyvoicechat.mixin;
 
-import com.moyettes.legacyvoicechat.utils.MinecraftAccessor;
 import net.minecraft.network.RemoteConnection;
-import net.ornithemc.osl.networking.api.client.ClientConnectionEvents;
+import com.moyettes.legacyvoicechat.client.Voice;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -17,6 +16,8 @@ public class ConnectionMixin {
 		at = @At("HEAD")
 	)
 	private void onDisconnect(CallbackInfo ci) {
-		ClientConnectionEvents.DISCONNECT.invoker().accept(MinecraftAccessor.getMinecraft());
+		// LVC's own disconnect (idempotent). This used to fire OSL's DISCONNECT event by hand, so every other mod's
+		// disconnect listener ran twice once OSL fires it itself (gen2 does).
+		Voice.forceDisconnect();
 	}
 }

@@ -26,7 +26,7 @@ public class KeyEvents {
 	}
 
 	private void handleKeybinds() {
-		if(muteKeybind.isPressed()){
+		if(muteKeybind.consumeClick()){
 			VoiceClient voiceClient = Voice.getVoiceClient();
 			if (voiceClient != null) {
 				voiceClient.toggleMute();
@@ -34,7 +34,7 @@ public class KeyEvents {
 				Voice.LOGGER.info("Voice client not connected - cannot toggle mute");
 			}
 		}
-		if (menuKeybind.isPressed()) {
+		if (menuKeybind.consumeClick()) {
 			VoiceClientContext ctx = VoiceClientBoot.getContext();
 			IGuiBridge gui = ctx != null ? ctx.gui : null;
 			if (gui != null) {
@@ -42,11 +42,10 @@ public class KeyEvents {
 			}
 		}
 
-		if (ptt.isPressed()) {
-			VoiceClient voiceClient = Voice.getVoiceClient();
-			if (voiceClient != null && voiceClient.isPushToTalk()) {
-				voiceClient.setPttKeyPressed(true);
-			}
+		// Held state, every tick: it was set on when pressed and never off again (stuck transmitting).
+		VoiceClient pttClient = Voice.getVoiceClient();
+		if (pttClient != null && pttClient.isPushToTalk()) {
+			pttClient.setPttKeyPressed(ptt.isPressed());
 		}
 
 	}

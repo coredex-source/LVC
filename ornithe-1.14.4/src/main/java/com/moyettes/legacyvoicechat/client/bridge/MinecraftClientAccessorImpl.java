@@ -71,7 +71,7 @@ public final class MinecraftClientAccessorImpl implements IMinecraftClientAccess
 		if (mc == null || mc.world == null) return Collections.emptyList();
 
 		java.util.List<PlayerRef> out = new ArrayList<PlayerRef>();
-		for (Object obj : mc.world.m_2450655()) {
+		for (Object obj : mc.world.getPlayers()) {
 			if (obj instanceof PlayerEntity) {
 				PlayerEntity p = (PlayerEntity) obj;
 				String name;

@@ -1,9 +1,11 @@
 package com.moyettes.legacyvoicechat.compat.networking;
 
 import com.moyettes.legacyvoicechat.Voice;
+import com.moyettes.legacyvoicechat.network.OslPayload;
 import com.moyettes.legacyvoicechat.packet.VoiceModSupportedPayload;
+import net.minecraft.server.entity.living.player.ServerPlayerEntity;
 import com.moyettes.legacyvoicechat.packet.VoiceServerInfoPayload;
-import net.minecraft.network.PacketByteBuf;
+import net.ornithemc.osl.lifecycle.api.server.MinecraftServerEvents;
 import net.ornithemc.osl.networking.api.server.ServerConnectionEvents;
 import net.ornithemc.osl.networking.api.server.ServerPlayNetworking;
 
@@ -15,70 +17,42 @@ import java.io.IOException;
 
 public class VoiceNetworkingCompat1_8_8 implements VoiceNetworkingCompat {
 
-	public static final class OslModSupported extends VoiceModSupportedPayload
-		implements net.ornithemc.osl.networking.api.CustomPayload {
-		public OslModSupported() { super(); }
 
-		@Override
-		public void read(PacketByteBuf buf) throws IOException {
-			byte[] bytes = new byte[buf.readableBytes()];
-			buf.readBytes(bytes);
-			super.read(new DataInputStream(new ByteArrayInputStream(bytes)));
-		}
-
-		@Override
-		public void write(PacketByteBuf buf) throws IOException {
-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			super.write(new DataOutputStream(baos));
-			buf.writeBytes(baos.toByteArray());
-		}
-	}
-
-	public static final class OslServerInfo extends VoiceServerInfoPayload
-		implements net.ornithemc.osl.networking.api.CustomPayload {
-		public OslServerInfo() { super(); }
-
-		public OslServerInfo(int port, String token, String protocolVersion, String host) {
-			super(port, token, protocolVersion, host);
-		}
-
-		@Override
-		public void read(PacketByteBuf buf) throws IOException {
-			byte[] bytes = new byte[buf.readableBytes()];
-			buf.readBytes(bytes);
-			super.read(new DataInputStream(new ByteArrayInputStream(bytes)));
-		}
-
-		@Override
-		public void write(PacketByteBuf buf) throws IOException {
-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			super.write(new DataOutputStream(baos));
-			buf.writeBytes(baos.toByteArray());
-		}
-	}
 
 	@Override
 	public void registerNetworkListeners() {
-		ServerPlayNetworking.registerListener("voice|mod_supported", OslModSupported::new,
-			(server, handler, player, payload) -> {
+		// Players and positions for the voice server, captured on the game thread (it used to read the game's
+		// player list from its own threads); and stop it with the server.
+		MinecraftServerEvents.TICK_END.register(server -> Voice.onServerTick());
+		MinecraftServerEvents.STOP.register(server -> Voice.shutdown());
+
+		ServerPlayNetworking.registerListener(OslPayload.MOD_SUPPORTED, () -> new OslPayload<>(new VoiceModSupportedPayload()),
+			(context, message) -> {
+				// From 1.8 on payloads arrive on the network thread: OSL runs this again on the main thread.
+				context.ensureOnMainThread();
+				ServerPlayerEntity player = context.player();
+				VoiceModSupportedPayload supported = message.get();
+				if (!Voice.acceptsClient(player.getName(), supported.getProtocolVersion())) {
+					return;
+				}
 				String name = player.getName();
 				int id = player.getNetworkId();
 
 				String token = Voice.generateAuthToken(name);
 				Voice.getPlayerAuthTokens().put(id, token);
 
-				OslServerInfo info = new OslServerInfo(
+				VoiceServerInfoPayload info = new VoiceServerInfoPayload(
 					Voice.getVoiceServer().getPort(),
 					token,
 					Voice.getVoiceServer().getProtocolVersion(),
 					Voice.getVoiceServer().getConfig().getServerHost()
 				);
 
-				ServerPlayNetworking.send(player, "voice|server_info", info);
-				return false;
+				ServerPlayNetworking.send(player, OslPayload.SERVER_INFO, new OslPayload<>(info));
 			});
 
-		ServerConnectionEvents.DISCONNECT.register((handler, player) -> {
+		ServerConnectionEvents.DISCONNECT.register(context -> {
+			ServerPlayerEntity player = context.player();
 			Voice.getVoiceServer().disconnectPlayer(player.getNetworkId());
 			Voice.getPlayerAuthTokens().remove(player.getNetworkId());
 		});

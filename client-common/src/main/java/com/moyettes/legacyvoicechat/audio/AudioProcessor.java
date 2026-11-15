@@ -61,10 +61,7 @@ public class AudioProcessor {
 
     private void initializeAudioFilters() {
         this.gainFilter = new GainFilter(1.0f);
-        this.noiseFilter = new NoiseSuppressionFilter(false);
-
         audioFilters.add(gainFilter);
-        //audioFilters.add(noiseFilter);
     }
 
     public byte[] encodeAudio(byte[] rawAudio) {
@@ -161,10 +158,22 @@ public class AudioProcessor {
         }
     }
 
+    /** RNNoise on the microphone (after the gain). It used to be created off and never added to the chain. */
     public void setNoiseSuppression(boolean enabled) {
-        if (noiseFilter != null) {
-            if (!enabled) {
+        synchronized (encoderLock) {
+            if (noiseFilter != null) {
+                audioFilters.remove(noiseFilter);
                 noiseFilter.close();
+                noiseFilter = null;
+            }
+            if (enabled) {
+                NoiseSuppressionFilter filter = new NoiseSuppressionFilter(true);
+                if (filter.isEnabled()) {
+                    noiseFilter = filter;
+                    audioFilters.add(filter);
+                } else {
+                    filter.close();
+                }
             }
         }
     }

@@ -4,7 +4,7 @@ import com.moyettes.legacyvoicechat.client.platform.IMinecraftClientAccessor;
 import com.moyettes.legacyvoicechat.client.platform.PlayerRef;
 import com.moyettes.legacyvoicechat.utils.MinecraftAccessor;
 import net.minecraft.client.Minecraft;
-import net.minecraft.entity.living.player.PlayerEntity;
+import net.minecraft.entity.mob.player.PlayerEntity;
 
 import java.util.ArrayList;
 import java.util.Collection;

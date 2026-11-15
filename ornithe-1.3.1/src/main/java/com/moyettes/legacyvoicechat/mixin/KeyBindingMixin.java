@@ -15,7 +15,7 @@ public abstract class KeyBindingMixin implements KeyBindingExtension {
 	private boolean wasPressed = false;
 
 	@Override
-	public boolean isPressed() {
+	public boolean lvc$wasPressed() {
 		if (MinecraftAccessor.getMinecraft().screen != null)
 			return false;
 

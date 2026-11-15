@@ -12,7 +12,9 @@ public class GroupMemberUpdatePacket extends UdpPacket {
         MEMBER_JOINED(0),
         MEMBER_LEFT(1),
         GROUP_CREATED(2),
-        GROUP_DELETED(3);
+        GROUP_DELETED(3),
+        /** A create or join of the receiving player failed; the reason is in playerName (protocol 2). */
+        REJECTED(4);
 
         private final int id;
 

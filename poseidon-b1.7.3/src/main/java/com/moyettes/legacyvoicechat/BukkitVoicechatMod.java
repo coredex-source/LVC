@@ -1,35 +1,38 @@
 package com.moyettes.legacyvoicechat;
 
-import net.minecraft.server.Packet;
-import org.bukkit.event.Listener;
+import com.moyettes.legacyvoicechat.log.VoiceLog;
+import com.moyettes.legacyvoicechat.poseidon.PoseidonPlugin;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.lang.reflect.Method;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
-public class BukkitVoicechatMod extends JavaPlugin implements Listener {
+/**
+ * LegacyVoiceChat for Project Poseidon (Beta 1.7.3 servers): the plugin's main class (plugin.yml); the work is in
+ * {@link PoseidonPlugin}.
+ */
+public class BukkitVoicechatMod extends JavaPlugin {
 
+	private PoseidonPlugin plugin;
 
 	@Override
 	public void onEnable() {
-
-	}
-
-	private void registerVoiceChatPackets() throws Exception {
-		try {
-			Method registerMethod = Packet.class.getMethod("registerPacket", int.class, boolean.class, boolean.class, Class.class);
-
-			//registerMethod.invoke(null, 250, true, true, CustomPayloadPacket.class);
-
-			System.out.println("Registered packets using public registerPacket method");
-		} catch (NoSuchMethodException e) {
-			System.out.println("Public registerPacket method not found, trying private method");
+		final Logger log = getServer().getLogger();
+		VoiceLog.setSink((level, message, error) -> log.log(
+			level == VoiceLog.ERROR ? Level.SEVERE : level == VoiceLog.WARN ? Level.WARNING : Level.INFO,
+			"[LegacyVoiceChat] " + message, error));
+		plugin = new PoseidonPlugin(this);
+		if (!plugin.enable()) {
+			plugin = null;
+			getServer().getPluginManager().disablePlugin(this);
 		}
-
 	}
 
 	@Override
 	public void onDisable() {
-
+		if (plugin != null) {
+			plugin.disable();
+			plugin = null;
+		}
 	}
-
 }
